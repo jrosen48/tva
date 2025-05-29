@@ -44,10 +44,10 @@ combined_df <- combined_df |>
   mutate(post_text = str_replace(post_text, '^"', ''))
 
 combined_df <- combined_df |> 
-  mutate(post_text = str_sub(post_text, end = 20))
+  mutate(post_text = str_sub(post_text, end = 30))
 
 posts <- posts |> 
-  mutate(post_text = str_sub(post_text, end = 20))
+  mutate(post_text = str_sub(post_text, end = 30))
 
 combined_df
 posts
@@ -55,14 +55,42 @@ posts
 combined_df <- combined_df |> 
   left_join(posts, by = join_by(post_text))
 
+combined_df %>% 
+  count(Impressions, sort = TRUE)
+
+combined_df %>%
+  skimr::skim()
+
 combined_df |> 
   select(date_of_extract, date_of_post, Condition, post_text, 
-    Reactions, Shares, Views, Impressions, `Total clicks`, `Link Clicks`) |>
+         Reactions, Shares, Comments, `Reactions, Comments and Shares`,
+         Views, 
+         # Impressions, mostly missing - 91% missing, others complete
+         Reach, 
+         `Total clicks`, `Other Clicks`, `Link Clicks`) |> # link clicks, 9% missing
   gather(key, val, -date_of_extract, -date_of_post, -Condition, -post_text) |> 
   filter(!is.na(date_of_post)) |> 
   mutate(date_of_extract = lubridate::ymd(date_of_extract)) |> 
   mutate(date_of_post = lubridate::ymd(date_of_post)) |> 
   mutate(day_diff = date_of_extract - date_of_post) |> 
+  filter(day_diff > 0) %>% 
+  group_by(Condition, key) %>% 
+  summarize(mean_val = mean(val, na.rm = TRUE)) %>% 
+  spread(Condition, mean_val)
+
+combined_df |> 
+  select(date_of_extract, date_of_post, Condition, post_text, 
+    Reactions, Shares, Comments, `Reactions, Comments and Shares`,
+    Views, 
+    # Impressions, mostly missing - 91% missing, others complete
+    Reach, 
+    `Total clicks`, `Other Clicks`, `Link Clicks`) |> # link clicks, 9% missing
+  gather(key, val, -date_of_extract, -date_of_post, -Condition, -post_text) |> 
+  filter(!is.na(date_of_post)) |> 
+  mutate(date_of_extract = lubridate::ymd(date_of_extract)) |> 
+  mutate(date_of_post = lubridate::ymd(date_of_post)) |> 
+  mutate(day_diff = date_of_extract - date_of_post) |> 
+  filter(day_diff > 0) %>% 
   ggplot(aes(y = val, x = day_diff, group = post_text, color = Condition)) +
   geom_point() +
   geom_line() +
