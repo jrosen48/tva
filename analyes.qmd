@@ -1,0 +1,173 @@
+---
+title: "TVA analyses"
+format: html
+editor: visual
+---
+
+## processing, loading
+
+```{r}
+library(tidyverse)
+library(googlesheets4)
+library(googledrive)
+library(ggrepel)
+library(lme4)
+
+posts <- read_sheet("https://docs.google.com/spreadsheets/d/1dDv3Zib0TC9R5GzjACkN6MzsneCPp6w7BPEJ8Kcjp94/edit?gid=2035831840#gid=2035831840")
+
+folder <- drive_get("https://drive.google.com/drive/folders/1oD6VagXmO0fHFD0GF14P7RbVaXSlAPb_")
+
+csv_files <- drive_ls(path = folder) %>%
+  filter(grepl("\\.csv$", name))
+
+csv_files
+
+# Read all CSVs into a list
+csv_data_list <- map2(
+  .x = csv_files$id,
+  .y = csv_files$name,
+  .f = function(file_id, file_name) {
+    temp_path <- tempfile(fileext = ".csv")
+    drive_download(as_id(file_id), path = temp_path, overwrite = TRUE)
+    read_csv(temp_path)
+  }
+)
+
+names(csv_data_list) <- csv_files$name
+
+combined_df <- imap_dfr(
+  .x = csv_data_list,
+  .f = ~ mutate(.x, source_file = .y)
+)
+
+combined_df <- combined_df |>
+  mutate(date_of_extract = str_sub(source_file, end = 50)) |>
+  select(date_of_extract, everything())
+
+combined_df <- combined_df |>
+  select(date_of_extract, post_text = Title, everything())
+
+posts <- posts |>
+  fill(Week, .direction = "down") |>
+  rename(post_text = `Post Text Caption`) |>
+  select(date_of_post = `Post Date`, post_text, Condition)
+
+combined_df <- combined_df |>
+  mutate(post_text = str_replace(post_text, '^"', ''))
+
+combined_df <- combined_df |>
+  mutate(post_text = str_sub(post_text, end = 50))
+
+posts <- posts |>
+  mutate(post_text = str_sub(post_text, end = 50))
+
+combined_df
+posts
+
+write_csv(combined_df, "tva_combined-2025-12-05.csv")
+write_csv(posts, "tva_posts-2025-12-05.csv")
+```
+
+```{r}
+combined_df <- read_csv("tva_combined-2025-12-05.csv")
+posts <- read_csv("tva_posts-2025-12-05.csv")
+
+combined_df <- combined_df |> 
+  mutate(date_of_extract = case_when(
+    date_of_extract == "2025-05-10-Apr-28-2025_Jul-10-2025_190855096992245" ~ "2025-08-10-Apr-28-2025_Jul-10-2025_1908550969922451",
+    date_of_extract == "2025-05-17-Apr-30-2025_Jul-17-2025_175523157509950" ~ "2025-08-17-Apr-30-2025_Jul-17-2025_1755231575099506",
+    date_of_extract == "2025-05-18-May-01-2025_Jul-18-2025_742843041435809" ~ "2025-08-18-May-01-2025_Jul-18-2025_742843041435809",
+    .default = date_of_extract
+  ))
+
+posts <- posts  |> mutate(date_of_post = ymd(date_of_post))
+
+combined_df <- combined_df |>
+  mutate(date_of_post = mdy_hm(`Publish time`)) |> select(date_of_post, everything()) |> 
+  mutate(date_of_post = round_date(date_of_post, "day"),
+         date_of_post = as_date(date_of_post))
+```
+
+```{r}
+posts <- posts |> rename(date_of_post_posts = date_of_post)
+combined_df <- combined_df |> mutate(date_of_post_combined_df = date_of_post)
+
+joined_df <- combined_df |> 
+  left_join(posts, by = "post_text")
+
+filtered_joined_df <- joined_df |> 
+  filter(!is.na(date_of_post_posts))
+
+filtered_joined_df <- filtered_joined_df |> 
+  mutate(date_of_extract_sub = str_sub(date_of_extract, end = 10)) |>
+  mutate(date_of_extract_sub = ymd(date_of_extract_sub))
+```
+
+```{r}
+filtered_joined_df <- filtered_joined_df |> 
+  mutate(day_diff = date_of_extract_sub - date_of_post_posts) |> 
+  select(date_of_post_posts, date_of_post_combined_df, date_of_extract_sub, day_diff, everything())
+
+filtered_joined_df |> 
+  group_by(post_text) |>
+  arrange(day_diff)
+
+for_analysis <- filtered_joined_df |> 
+  filter(day_diff >= 28 & day_diff <= 31) |> 
+  group_by(post_text) |> 
+  slice(1) |> 
+  ungroup()
+
+for_analysis
+```
+
+```{r}
+for_analysis %>% 
+  group_by(Condition) %>% 
+  summarize(mean_reactions = mean(Reactions, na.rm = TRUE),
+            mean_comments = mean(Comments, na.rm = TRUE),
+            mean_shares = mean(Shares, na.rm = TRUE),
+            mean_views = mean(Views, na.rm = TRUE),
+            mean_reach = mean(Reach, na.rm = TRUE),
+            link_clicks = mean(`Link Clicks`, na.rm = TRUE)) |> 
+  gather(key, val, -Condition) |> 
+  ggplot(aes(x = Condition, y = val, fill = Condition)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~key, scales = "free_y") +
+  theme_minimal() +
+  scale_fill_brewer(palette = 1, type = "qual")
+```
+
+
+```{r}
+# T-tests comparing conditions
+t.test(Reactions ~ Condition, data = for_analysis)
+t.test(Comments ~ Condition, data = for_analysis)
+t.test(Shares ~ Condition, data = for_analysis)
+t.test(Views ~ Condition, data = for_analysis)
+t.test(Reach ~ Condition, data = for_analysis)
+t.test(`Link Clicks` ~ Condition, data = for_analysis)
+
+# Collate t-test results into a single table
+map_dfr(
+  c("Reactions", "Comments", "Shares", "Views", "Reach", "`Link Clicks`"),
+  ~ {
+    test <- t.test(as.formula(paste(.x, "~ Condition")), data = for_analysis)
+    tibble(
+      Outcome = str_remove_all(.x, "`"),  # Remove backticks for display
+      Mean_Group1 = test$estimate[1],
+      Mean_Group2 = test$estimate[2],
+      Difference = test$estimate[1] - test$estimate[2],
+      t_statistic = test$statistic,
+      df = test$parameter,
+      p_value = test$p.value,
+      CI_lower = test$conf.int[1],
+      CI_upper = test$conf.int[2]
+    )
+  }
+) %>%
+  mutate(
+    Significant = ifelse(p_value < 0.05, "*", ""),
+    across(where(is.numeric), ~round(.x, 3))
+  ) 
+```
