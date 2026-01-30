@@ -2,6 +2,8 @@
 title: "TVA analyses"
 format: html
 editor: visual
+author: "Josh"
+date: "2026-01-30"
 ---
 
 ## processing, loading
@@ -12,6 +14,7 @@ library(googlesheets4)
 library(googledrive)
 library(ggrepel)
 library(lme4)
+library(plotly)
 
 posts <- read_sheet("https://docs.google.com/spreadsheets/d/1dDv3Zib0TC9R5GzjACkN6MzsneCPp6w7BPEJ8Kcjp94/edit?gid=2035831840#gid=2035831840")
 
@@ -94,7 +97,9 @@ combined_df <- combined_df |> mutate(date_of_post_combined_df = date_of_post)
 
 joined_df <- combined_df |> 
   left_join(posts, by = "post_text")
+```
 
+```{r}
 filtered_joined_df <- joined_df |> 
   filter(!is.na(date_of_post_posts))
 
@@ -106,19 +111,110 @@ filtered_joined_df <- filtered_joined_df |>
 ```{r}
 filtered_joined_df <- filtered_joined_df |> 
   mutate(day_diff = date_of_extract_sub - date_of_post_posts) |> 
-  select(date_of_post_posts, date_of_post_combined_df, date_of_extract_sub, day_diff, everything())
+  select(date_of_post_posts, date_of_post_combined_df, day_diff, date_of_extract_sub, day_diff, everything())
 
-filtered_joined_df |> 
+filtered_joined_df
+```
+
+```{r}
+for_poisson <- filtered_joined_df |> 
+  select(post_text, Condition, date_of_original_post = date_of_post, date_of_extract, day_diff, Reactions, Comments, Shares, Views, Reach, `Link Clicks`)  |>
+  arrange(post_text, day_diff) |> 
+  filter(day_diff < 33)
+
+```
+
+Calculate daily differences for each post
+just to check when the cut should be
+```{r}
+for_poisson_diff <- for_poisson |>
   group_by(post_text) |>
-  arrange(day_diff)
+  arrange(day_diff) |>
+  mutate(
+    reactions_diff = Reactions - lag(Reactions, default = 0),
+    comments_diff = Comments - lag(Comments, default = 0),
+    shares_diff = Shares - lag(Shares, default = 0),
+    views_diff = Views - lag(Views, default = 0),
+    reach_diff = Reach - lag(Reach, default = 0),
+    link_clicks_diff = `Link Clicks` - lag(`Link Clicks`, default = 0)
+  ) |>
+  ungroup()
 
-for_analysis <- filtered_joined_df |> 
+for_poisson_diff |> 
+    arrange(post_text, day_diff) |> View()
+     
+# Reshape for plotting
+p <- for_poisson_diff |>
+  select(post_text, Condition, day_diff, ends_with("_diff")) |>
+  pivot_longer(
+    cols = ends_with("_diff") & !day_diff,
+    names_to = "metric",
+    values_to = "daily_change"
+  ) |>
+  mutate(metric = str_remove(metric, "_diff") |> str_to_title()) |>
+  ggplot(aes(x = as.numeric(day_diff), y = daily_change, color = Condition)) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(
+    x = "Days Since Post",
+    y = "Daily Change",
+    title = "Rate of Change in Engagement Metrics Over Time"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1")
+
+ggplotly(p)
+```
+
+```{r}
+for_poisson <- for_poisson |> 
+  mutate(first_week = ifelse(day_diff <= 7, 1, 0))
+
+library(lme4)
+
+for_poisson
+
+```
+
+```{r}
+# Comments model
+m1 <- glmer(Comments ~ 1 + day_diff*first_week*Condition + 
+  (1|post_text), data = for_poisson, family = "poisson")
+
+# Reactions model
+m2 <- glmer(Reactions ~ 1 + day_diff*first_week*Condition + 
+  (1|post_text), data = for_poisson, family = "poisson")
+
+# Shares model
+m3 <- glmer(Shares ~ 1 + day_diff*first_week*Condition + 
+  (1|post_text), data = for_poisson, family = "poisson")
+
+# Views model
+m4 <- glmer(Views ~ 1 + day_diff*first_week*Condition + 
+  (1|post_text), data = for_poisson, family = "poisson")
+
+# Reach model
+m5 <- glmer(Reach ~ 1 + day_diff*first_week*Condition + 
+  (1|post_text), data = for_poisson, family = "poisson")
+
+# Link Clicks model
+m6 <- glmer(`Link Clicks` ~ 1 + day_diff*first_week*Condition + 
+  (1|post_text), data = for_poisson, family = "poisson")
+
+# Display all models in one table
+sjPlot::tab_model(m1, m2, m3, m4, m5, m6,
+                  dv.labels = c("Comments", "Reactions", "Shares", 
+                                "Views", "Reach", "Link Clicks"))
+```
+
+
+
+```{r}
+for_analysis_30_days <- filtered_joined_df |> 
   filter(day_diff >= 28 & day_diff <= 31) |> 
   group_by(post_text) |> 
   slice(1) |> 
   ungroup()
-
-for_analysis
 ```
 
 ```{r}
